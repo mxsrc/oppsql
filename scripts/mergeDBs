@@ -1,0 +1,102 @@
+#!/usr/bin/python3
+
+import logging
+import os
+import os.path as osp
+import sys
+import sqlite3
+import sqlalchemy
+
+from oppsql import model
+
+
+def merge_dbs(c, result_dir):
+    exts = ('.sca', '.vec')
+    dbs = {osp.join(result_dir, db) for db in os.listdir(result_dir) if osp.splitext(db)[1] in exts}
+
+    def db_id(path):
+        return osp.splitext(osp.basename(path))[0]
+
+    engine = sqlalchemy.create_engine("sqlite://", poolclass=sqlalchemy.pool.StaticPool, creator=lambda: c)
+    model.metadata.create_all(engine)
+    engine.execute(model.db.insert([{'dbName': dbid} for dbid in set(db_id(db) for db in dbs)]))
+
+    ignored_tables = ('sqlite_sequence', 'db')
+    table_stmt = ("SELECT name FROM sqlite_master WHERE type == 'table' AND name NOT IN ({})"
+                  .format(', '.join(('?',) * len(ignored_tables))))
+    tables = [t[0] for t in c.execute(table_stmt, ignored_tables).fetchall()]
+
+    for db in dbs:
+        logging.info('Adding {}'.format(db))
+        c.execute("ATTACH '{}' AS new".format(db))
+
+        dbId = c.execute('SELECT dbId FROM db WHERE dbName = ?', (db_id(db),)).fetchone()[0]
+
+        shared_tables = ('run', 'runattr', 'runparam')
+
+        for table in tables:
+            if table in shared_tables:
+                # Check, whether the entries of this table have already been inserted
+                new_entries_stmt = 'SELECT ? as dbId, * FROM new.{table} EXCEPT SELECT * FROM {table}'
+                already_inserted = not c.execute(new_entries_stmt.format(table=table), (dbId,)).fetchone()
+                if already_inserted:
+                    continue
+
+            c.execute('INSERT INTO {table} SELECT ? AS dbId, * FROM new.{table}'.format(table=table), (dbId,))
+
+        c.commit()
+        c.execute('DETACH new')
+
+
+def post_process(c):
+    c.execute('''UPDATE runattr SET attrValue = REPLACE(attrValue, '"', '')''')
+    c.execute('''UPDATE runparam SET parValue = REPLACE(parValue, '"', '')''')
+
+
+def main():
+    import argparse
+    import itertools
+
+    def longest_common_prefix(strs):
+        return ''.join([t[0] for t in itertools.takewhile(lambda xs: len(set(xs)) == 1, zip(*strs))])
+
+    def strip_special_suffix(s):
+        return s[0:max(i for i, c in enumerate(s) if c.isalnum()) + 1] if s else ''
+
+    parser = argparse.ArgumentParser('Merge OmNET++ SQLite result files')
+    parser.add_argument('-f', '--force', action='store_true', help="Overwrite exisiting output file")
+    parser.add_argument('-p', '--post-process', action='store_true',
+                        help="Apply postprocessing to the database. This removes quotation marks (\") from run "
+                             "attributes and parameters")
+    parser.add_argument('-o', '--output',
+                        help="Path to the combined database. If a directory is given, the longest prefix of "
+                             "the input databases will be used instead. By default the output is placed into "
+                             "the result directory")
+    parser.add_argument('result_dir', help="Directory, containing OmNET++ SQLite result files")
+    args = parser.parse_args()
+
+    if not args.output:
+        args.output = args.result_dir
+
+    if osp.isdir(args.output):
+        output = osp.join(args.output, '{}.db'.format(strip_special_suffix(longest_common_prefix(os.listdir(args.result_dir))) or 'out'))
+    elif osp.isfile(args.output) or (not osp.exists(args.output) and osp.isdir(osp.dirname(args.output))):
+        output = args.output
+    else:
+        assert(False)
+
+    if osp.exists(output):
+        if args.force:
+            logging.info('Overwriting existing file')
+            os.remove(output)
+        else:
+            raise parser.error('Output file exists')
+
+    with sqlite3.connect(output) as c:
+        merge_dbs(c, args.result_dir)
+        if args.post_process:
+            post_process(c)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
