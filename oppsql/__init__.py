@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 import sqlalchemy as sqa
 
@@ -5,6 +7,15 @@ from . import model as m
 
 
 __all__ = ['get_unique_param', 'get_vector', 'model']
+
+
+def _ignore_decimal_warning():
+    regex = (
+        r"^Dialect sqlite\+pysqlite does \*not\* support Decimal objects natively\, "
+        "and SQLAlchemy must convert from floating point - rounding errors and other "
+        "issues may occur\. Please consider storing Decimal numbers as strings or "
+        "integers on this platform for lossless storage\.$")
+    warnings.filterwarnings('ignore', regex, sqa.exc.SAWarning, r'^sqlalchemy\.sql\.sqltypes$')
 
 
 def get_unique_param(con, name, type):
@@ -15,6 +26,8 @@ def get_unique_param(con, name, type):
 
 
 def get_vector(engine, by, variable, time=False, run=False, module=False):
+    _ignore_decimal_warning()
+
     def simtime(simtime_raw, simtime_exponent):
         return simtime_raw * 10 ** simtime_exponent
 
