@@ -56,6 +56,8 @@ def get_vector(engine, by, variable, time=False, run=False, module=False):
         select.append(sqa.func.simtime(m.vectordata.c.simtimeRaw, m.run.c.simtimeExp).label('simtime'))
     if run:
         select.append(m.run.c.runName)  # TODO extract run number in SQL?
+    if module:
+        select.append(m.vector.c.moduleName)
     if single_variable:  # rename value column to variable name
         select.append(m.vectordata.c.value.label(variable))
     else:  # get both vector names and values
