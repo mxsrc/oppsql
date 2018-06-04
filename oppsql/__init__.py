@@ -54,8 +54,6 @@ def get_vector(engine, by, variable, time=False, run=False, module=False):
                   if not single_filter(by, attribute))
     if time:
         select.append(sqa.func.simtime(m.vectordata.c.simtimeRaw, m.run.c.simtimeExp).label('simtime'))
-    if run:
-        select.append(m.run.c.runName)  # TODO extract run number in SQL?
     if module:
         select.append(m.vector.c.moduleName)
     if single_variable:  # rename value column to variable name
@@ -81,10 +79,4 @@ def get_vector(engine, by, variable, time=False, run=False, module=False):
     with engine.connect() as conn:
         if time:
             conn.connection.connection.create_function('simtime', 2, simtime)
-        df = pd.read_sql(stmt, conn)
-
-        if run:
-            df = (df.assign(runId=lambda x: x.runName.str.extract(r'\w+-(\d+)', expand=False).astype('int'))
-                    .drop(columns=['runName']))
-
-    return df
+        return pd.read_sql(stmt, conn)
