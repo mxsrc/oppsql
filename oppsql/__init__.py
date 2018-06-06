@@ -126,7 +126,7 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
 
     def single_filter(by, attribute):
         f = attribute_filter(by, attribute)
-        return f and type(f) != tuple
+        return f and type(f) not in (list, tuple)
 
     def attribute_filter_expression(by, attribute):
         f = attribute_filter(by, attribute)
