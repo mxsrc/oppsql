@@ -25,21 +25,21 @@ def get_unique_param(con, name, type):
                    .scalar())
 
 
-def get_vector(engine, by, variable, time=False, run=False, module=False):
+def get_vector(engine, by, variable, time=False, run=False, module=False, filter_=None, aggregate=None):
     _ignore_decimal_warning()
 
     def simtime(simtime_raw, simtime_exponent):
         return simtime_raw * 10 ** simtime_exponent
 
-    def filter(by, attribute):
+    def attribute_filter(by, attribute):
         return by[attribute] if (type(by) == dict and attribute in by) else None
 
     def single_filter(by, attribute):
-        f = filter(by, attribute)
+        f = attribute_filter(by, attribute)
         return f and type(f) != tuple
 
     def attribute_filter_expression(by, attribute):
-        f = filter(by, attribute)
+        f = attribute_filter(by, attribute)
         if f:
             if single_filter(by, attribute):
                 return sqa.and_(m.runattr.c.attrName == attribute,
@@ -70,10 +70,17 @@ def get_vector(engine, by, variable, time=False, run=False, module=False):
     if module:
         select.append(m.vector.c.moduleName)
     if single_variable:  # rename value column to variable name
-        select.append(m.vectordata.c.value.label(variable))
+        if aggregate is not None:
+            select.append(aggregate(m.vectordata.c.value).label(variable))
+        else:
+            select.append(m.vectordata.c.value.label(variable))
     else:  # get both vector names and values
-        select.extend([m.vector.c.vectorName,
-                       m.vectordata.c.value])
+        if aggregate is not None:
+            select.extend([m.vector.c.vectorName,
+                           aggregate(m.vectordata.c.value)])
+        else:
+            select.extend([m.vector.c.vectorName,
+                           m.vectordata.c.value])
 
     tables = (m.run
                .join(m.vector)
@@ -82,12 +89,18 @@ def get_vector(engine, by, variable, time=False, run=False, module=False):
         tables = tables.join(query)
 
     constraints = []
+    if filter_ is not None:
+        constraints.append(filter_)
     if single_variable:
         constraints.append(m.vector.c.vectorName == variable)
     else:
         constraints.append((m.vector.c.vectorName.in_(variable)))
 
     stmt = sqa.select(select).select_from(tables).where(sqa.and_(*constraints))
+    if aggregate is not None:
+        stmt = stmt.group_by(*(query.c.attrValue
+                               for attribute, query in attribute_subqueries.items()
+                               if not single_filter(by, attribute)))
 
     with engine.connect() as conn:
         if time:
