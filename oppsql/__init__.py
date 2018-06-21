@@ -59,6 +59,11 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
         If given, results are grouped by the attributes given in `by` and the aggregated by the given
         function is applied.
 
+    Returns
+    -------
+    df : pandas.DataFrame
+        DataFrame containing the data. One column per non-singular attribute and value.
+
     Notes
     -----
     The simulation repetion number can be included by adding 'repetition' to the attributes. If not included,
