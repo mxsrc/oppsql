@@ -196,16 +196,14 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
         return f and type(f) not in (list, tuple)
 
     def attribute_filter_expression(by, attribute):
+        expr = [m.runattr.c.attrName == attribute]
         f = attribute_filter(by, attribute)
         if f:
             if single_filter(by, attribute):
-                return sqa.and_(m.runattr.c.attrName == attribute,
-                                m.runattr.c.attrValue == by[attribute])
+                expr.append(m.runattr.c.attrValue == f)
             else:
-                return sqa.and_(m.runattr.c.attrName == attribute,
-                                m.runattr.c.attrValue.in_(by[attribute]))
-        else:
-            return m.runattr.c.attrName == attribute
+                expr.append(m.runattr.c.attrValue.in_(f))
+        return sqa.and_(*expr)
 
     if type(by) == str:
         by = (by,)
