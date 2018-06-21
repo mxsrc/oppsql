@@ -1,4 +1,5 @@
 import warnings
+import re
 
 import pandas as pd
 import sqlalchemy as sqa
@@ -9,6 +10,40 @@ from . import model as m
 __all__ = ['get_unique_param', 'get_vector', 'model']
 
 
+def _map_database_value(val):
+    """Map values used in the database to the corresponding python data type.
+
+    The strings 'false' and 'true' are mapped to python's True and False. Numbers are parsed to represent as either
+    floats or ints. For values with no specific datatype, this function is the identity.
+
+    Parameters
+    ----------
+    val : string
+        A value from the database, as used in e.g. m.runattr.c.attrValue and m.runparam.c.parValue.
+
+    Returns
+    -------
+    mapped_val : string or bool
+        The given value or its mapped version
+    """
+    if val == 'true':
+        return True
+    elif val == 'false':
+        return False
+
+    try:
+        return int(val)
+    except ValueError:
+        pass
+
+    try:
+        return float(val)
+    except ValueError:
+        pass
+
+    return val
+
+
 def _ignore_decimal_warning():
     regex = (
         r"^Dialect sqlite\+pysqlite does \*not\* support Decimal objects natively\, "
@@ -16,6 +51,33 @@ def _ignore_decimal_warning():
         "issues may occur\. Please consider storing Decimal numbers as strings or "
         "integers on this platform for lossless storage\.$")
     warnings.filterwarnings('ignore', regex, sqa.exc.SAWarning, r'^sqlalchemy\.sql\.sqltypes$')
+
+
+def get_iterationvars(engine):
+    """Get the iteration variables used in the simulation
+
+    Parameters
+    ----------
+    engine : sqlalchemy.engine.Engine
+        Database connection.
+
+    Returns
+    -------
+    iterationvars : dict
+        Keys and values correspond to the attributes' names and values.
+    """
+    iterationvar_stmt = sqa.select([m.runattr.c.attrValue]).where(m.runattr.c.attrName == 'iterationvars')
+
+    def iterationvar_values_stmt(var):
+        return sqa.select([m.runattr.c.attrValue]).where(m.runattr.c.attrName == var).distinct()
+
+    with engine.connect() as conn:
+        iterationvars = ([re.match(r'\$(\w+)=.*', entry).groups(1)[0]
+                          for entry in conn.execute(iterationvar_stmt).fetchone()[0].split(', ')])
+        return {var: [_map_database_value(entry[0]) for entry in conn.execute(iterationvar_values_stmt(var)).fetchall()]
+                for var in iterationvars}
+
+
 
 
 def get_unique_param(con, name, type):
