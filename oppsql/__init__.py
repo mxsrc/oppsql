@@ -189,7 +189,10 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
         return simtime_raw * 10 ** simtime_exponent
 
     def attribute_filter(by, attribute):
-        return by[attribute] if (type(by) == dict and attribute in by) else None
+        f = by[attribute] if (type(by) == dict and attribute in by) else None
+        if type(f) == bool:
+            f = str(f).lower()
+        return f
 
     def single_filter(by, attribute):
         f = attribute_filter(by, attribute)
