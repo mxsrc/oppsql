@@ -44,6 +44,27 @@ def _map_database_value(val):
     return val
 
 
+def _map_python_value(val):
+    """Map a python data type to the corresponding string used in the database.
+
+    Bools will be mapped to their lowercase string representation.
+
+    Parameters
+    ----------
+    val : string, int, float or bool
+        A value from the database, as used in e.g. m.runattr.c.attrValue and m.runparam.c.parValue.
+
+    Returns
+    -------
+    mapped_val : string, int or float
+        The given value or its mapped version
+    """
+    if type(val) == bool:
+        return str(val).lower()
+
+    return val
+
+
 def _ignore_decimal_warning():
     regex = (
         r"^Dialect sqlite\+pysqlite does \*not\* support Decimal objects natively\, "
@@ -94,14 +115,15 @@ def get_unique_param(con, name, type):
                    .scalar())
 
 
-def get_vector(engine, by, variable, time=False, run=False, module=False, filter_=None, aggregate=None):
+def get_vector(engine, by, variable, time=False, run=False, module=False,
+               filter_=None, aggregate=None, self_descriptive_result=False):
     """Get OMNeT++ result vectors
 
     Parameters
     ----------
     engine : sqlalchemy.engine.Engine
         Database engine.
-    by : str or list or tuple or dict
+    by : str, list of strings, dict mapping strings to None, a string or a list of strings
         The attribute(s) to group results by. Depending on the type, the semantic changes
         Passing a string, list or tuple will group by the given attributes (as present in the runattr table).
         For each attribute, a column is added which contains the corresponding values.
@@ -120,6 +142,9 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
     aggregate : sqlalchemy aggregation function
         If given, results are grouped by the attributes given in `by` and the aggregated by the given
         function is applied.
+    self_descriptive_result : bool
+        Include columns for attribute values and variable names, even if they are singular, i.e., the contain only
+        a unique value.
 
     Returns
     -------
@@ -185,36 +210,49 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
     """
     _ignore_decimal_warning()
 
+    def normalize_by(by):
+        """Normalize the different 'by' syntaxes to a map of strings to lists of strings"""
+        def normalize_filter(filter_):
+            valid_types = (int, float, bool, str)
+            if filter_ is None:
+                return []
+            if type(filter_) in valid_types:
+                return [filter_]
+            if type(filter_) == list and all(type(val) in valid_types for val in filter_):
+                return filter_
+            else:
+                raise TypeError("Filter must be string, int, float or bool, a list of these or None")
+
+        if type(by) == str:
+            return {by: []}
+        elif type(by) == list and all(type(attr) == str for attr in by):
+            return {attr: [] for attr in by}
+        elif type(by) == dict and all(type(attr) == str for attr in by):
+            return {attr: normalize_filter(filter_) for attr, filter_ in by.items()}
+        else:
+            raise TypeError("By must be string, list of strings or dictionary")
+
+    def normalize_variable(variable):
+        """Normalize the different variable syntaxes to a list of strings"""
+        return [variable] if type(variable) == str else variable
+
     def simtime(simtime_raw, simtime_exponent):
+        """Compute float simtime from fixed-point notation"""
         return simtime_raw * 10 ** simtime_exponent
 
-    def attribute_filter(by, attribute):
-        f = by[attribute] if (type(by) == dict and attribute in by) else None
-        if type(f) == bool:
-            f = str(f).lower()
-        return f
-
     def single_filter(by, attribute):
-        f = attribute_filter(by, attribute)
-        return f and type(f) not in (list, tuple)
+        return len(by[attribute]) == 1
 
     def attribute_filter_expression(by, attribute):
-        expr = [m.runattr.c.attrName == attribute]
-        f = attribute_filter(by, attribute)
-        if f:
-            if single_filter(by, attribute):
-                expr.append(m.runattr.c.attrValue == f)
-            else:
-                expr.append(m.runattr.c.attrValue.in_(f))
-        return sqa.and_(*expr)
+        return sqa.and_(m.runattr.c.attrName == attribute,
+                        m.runattr.c.attrValue.in_(_map_python_value(val) for val in by[attribute])
+                        if by[attribute] else True)
 
-    if type(by) == str:
-        by = (by,)
-    single_variable = type(variable) == str
+    # Normalize parameters TODO complete: variables -> list, by -> dict
+    by = normalize_by(by)
+    variable = normalize_variable(variable)
 
-    attribute_subqueries = {attribute: sqa.select([m.runattr.c.runId,
-                                                   m.runattr.c.dbId,
-                                                   m.runattr.c.attrValue if not single_filter(by, attribute) else None])
+    attribute_subqueries = {attribute: sqa.select([m.runattr.c.runId, m.runattr.c.dbId, m.runattr.c.attrValue])
                                           .where(attribute_filter_expression(by, attribute))
                                           .alias()
                             for attribute in by}
@@ -222,23 +260,18 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
     select = []
     select.extend(query.c.attrValue.label(attribute)
                   for attribute, query in attribute_subqueries.items()
-                  if not single_filter(by, attribute))
+                  if not (len(by[attribute]) == 1 and not self_descriptive_result))
     if time:
         select.append(sqa.func.simtime(m.vectordata.c.simtimeRaw, m.run.c.simtimeExp).label('simtime'))
     if module:
         select.append(m.vector.c.moduleName)
-    if single_variable:  # rename value column to variable name
-        if aggregate is not None:
-            select.append(aggregate(m.vectordata.c.value).label(variable))
-        else:
-            select.append(m.vectordata.c.value.label(variable))
-    else:  # get both vector names and values
-        if aggregate is not None:
-            select.extend([m.vector.c.vectorName,
-                           aggregate(m.vectordata.c.value)])
-        else:
-            select.extend([m.vector.c.vectorName,
-                           m.vectordata.c.value])
+    if not (len(variable) == 1 and not self_descriptive_result):
+        select.append(m.vector.c.vectorName)
+
+    if aggregate is not None:
+        select.append(aggregate(m.vectordata.c.value))
+    else:
+        select.append(m.vectordata.c.value)
 
     tables = (m.run
                .join(m.vector)
@@ -249,10 +282,7 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
     constraints = []
     if filter_ is not None:
         constraints.append(filter_)
-    if single_variable:
-        constraints.append(m.vector.c.vectorName == variable)
-    else:
-        constraints.append((m.vector.c.vectorName.in_(variable)))
+    constraints.append((m.vector.c.vectorName.in_(variable)))
 
     stmt = sqa.select(select).select_from(tables).where(sqa.and_(*constraints))
     if aggregate is not None:
