@@ -38,7 +38,7 @@ def get_vector(engine, by, variable, time=False, run=False, module=False, filter
     Parameters
     ----------
     engine : sqlalchemy.engine.Engine
-        Database connection.
+        Database engine.
     by : str or list or tuple or dict
         The attribute(s) to group results by. Depending on the type, the semantic changes
         Passing a string, list or tuple will group by the given attributes (as present in the runattr table).
