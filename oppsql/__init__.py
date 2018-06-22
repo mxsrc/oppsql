@@ -84,8 +84,8 @@ def get_iterationvars(engine):
 
     Returns
     -------
-    iterationvars : dict
-        Keys and values correspond to the attributes' names and values.
+    iterationvars : list
+        List of iteration variables.
     """
     iterationvar_stmt = sqa.select([m.runattr.c.attrValue]).where(m.runattr.c.attrName == 'iterationvars')
 
@@ -93,12 +93,48 @@ def get_iterationvars(engine):
         return sqa.select([m.runattr.c.attrValue]).where(m.runattr.c.attrName == var).distinct()
 
     with engine.connect() as conn:
-        iterationvars = ([re.match(r'\$(\w+)=.*', entry).groups(1)[0]
-                          for entry in conn.execute(iterationvar_stmt).fetchone()[0].split(', ')])
-        return {var: [_map_database_value(entry[0]) for entry in conn.execute(iterationvar_values_stmt(var)).fetchall()]
-                for var in iterationvars}
+        return ([re.match(r'\$(\w+)=.*', entry).groups(1)[0]
+                 for entry in conn.execute(iterationvar_stmt).fetchone()[0].split(', ')])
 
 
+def get_attribute_values(engine, attribute):
+    """Get distinct values of attributes
+
+    Parameters
+    ----------
+    engine : sqlalchemy.engine.Engine
+        Database connection.
+    attribute : string
+        Attribute name.
+
+    Returns
+    -------
+    values : list
+        List of unique values the given attribute assumes in the simulation
+    """
+    attribute_stmt = sqa.select([m.runattr.c.attrValue]).where(m.runattr.c.attrName == attribute).distinct()
+
+    with engine.connect() as conn:
+        return [_map_database_value(val[0]) for val in conn.execute(attribute_stmt)]
+
+
+def get_vectors(engine):
+    """Get distinct vector names
+
+    Parameters
+    ----------
+    engine : sqlalchemy.engine.Engine
+        Database connection.
+
+    Returns
+    -------
+    values : list
+        List of vector names
+    """
+    vector_stmt = sqa.select([m.vector.c.vectorName]).distinct()
+
+    with engine.connect() as conn:
+        return [val[0] for val in conn.execute(vector_stmt)]
 
 
 def get_unique_param(con, name, type):

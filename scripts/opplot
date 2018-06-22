@@ -1,8 +1,182 @@
 #!/usr/bin/python3
 
 
+import logging
+import os
+import os.path as osp
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+import sqlalchemy as sqa
+
+import oppsql
+
+
 def main():
-    return
+    import argparse
+
+    def parse_args():
+        class ValidateListChoices(argparse.Action):
+
+            def __call__(self, parser, args, values, option_string=None):
+                if self.type is not None:
+                    values = [self.type(value) for value in values]
+                invalid_values = [value for value in values if value not in self.choices]
+                if invalid_values:
+                    raise ValueError('Passed non valid value{}: '.format('s' if len(invalid_values) > 1 else '',
+                                                                         ', '.join(invalid_values)))
+                setattr(args, self.dest, values)
+
+        def compute_database_path(path):
+            """Compute an explicit database path."""
+            if path and osp.isfile(path):
+                return path
+            elif path and osp.isdir(path):
+                database_candidates = [osp.join(path, entry) for entry in os.listdir(path)
+                                       if osp.splitext(entry)[1] == '.db']
+                if len(database_candidates) == 0:
+                    raise ValueError('No database in given directory')
+                elif len(database_candidates) == 0:
+                    raise ValueError('Multiple databases in given directory, try specifying it explicitly.')
+                else:
+                    return database_candidates[0]
+            else:
+                raise ValueError('No database specified.')
+
+        parser = argparse.ArgumentParser(description="Plot arbitrary vectors from a OMNeT++ result database",
+                                         add_help=False)
+        parser.add_argument('--context', default='talk', choices=['paper', 'notebook', 'talk', 'poster'],
+                            help="Seaborn plot context")
+        parser.add_argument('--kind', required=True,
+                            choices=['point', 'box', 'violin', 'bar', 'strip', 'ecdf', 'timeseries'],
+                            help="""Kind of plot. When using 'ecdf' or 'timeseries', the x-axis can't be
+                                    chosen as a dimension.""")
+        parser.add_argument('-q', '--quiet', action='store_true', help="Omit log output, such as warnings.")
+        parser.add_argument('-i', '--database', help="Result database. Explicit path or directory. ")
+        output_group = parser.add_mutually_exclusive_group(required=True)
+        output_group.add_argument('-s', '--show', action='store_true', help="Show the plot instead of saving it.")
+        fileoutput_group = output_group.add_group("File output")
+        fileoutput_group.add_argument('-o', '--output', default='images',
+                                      help="""Output directory or path. If a directory is given, the filename will be
+                                              deduced from the plot type and parameters. Otherwise, the explicit path is
+                                              used. If no explicit filetype, but a path is given, the extension of the
+                                              explicit path is used.""")
+        fileoutput_group.add_argument('--filetype', help="""Plot file type. The usual image formats can be used, as well
+                                                            as csv to export the bare data instead of plotting.""")
+        fileoutput_group.add_argument('-f', '--force',
+                                      help="""Plot file type. The usual image formats can be used, as well as csv to
+                                              export the bare data instead of plotting.""")
+
+        args, _ = parser.parse_known_args()
+        parser.add_argument('-h', '--help', action='help', help="""Show this help message and exit. When used in
+                                                                   conjunction with -i, information about database-based
+                                                                   options is added.""")
+        try:
+            database = compute_database_path(args.database)
+        except ValueError as e:
+            parser.error(e)
+
+        # Add arguments based on the given database
+        engine = sqa.create_engine('sqlite:///{}'.format(database))
+
+        # TODO don't rely on the assumption that the dimensions are orthogonal
+        #      deduce valid values from the set of all runattr.iterationvars
+        data_dimensions = {attribute: values
+                           for attribute, values in ((attribute, oppsql.get_attribute_values(engine, attribute))
+                                                     for attribute in oppsql.get_iterationvars(engine) + ['repetition'])
+                           if len(values) > 1}
+        if 'variables' in data_dimensions:  # TODO resolve issue properly
+            parser.error("Results contain attribute 'variables'. The name clashes with a name used by this script.")
+
+        dimension_choices = list(data_dimensions.keys()) + ['variables']
+
+        dimensions = ['row', 'col', 'hue', 'x']
+
+        # Add arguments to indicate the plot's structure
+        parser.add_argument('--row', choices=dimension_choices,
+                            help="The attribute defining the data's dimension used for rows of the grid")
+        parser.add_argument('--col', choices=dimension_choices,
+                            help="The attribute defining the data's dimension used for columns of the grid")
+        parser.add_argument('--hue', choices=dimension_choices,
+                            help="The attribute defining the data's dimension used for plotting individual graphs")
+        parser.add_argument('x', choices=dimension_choices,
+                            help="""The attribute defining the data's dimension used for plotting individual graphs. Must
+                                    not be passed for specific plot kinds, like eCDF or timeseries.""")
+
+        # Add filter arguments for attributes
+        for var, values in data_dimensions.items():
+            parser.add_argument('--{}'.format(var), nargs='+', action=ValidateListChoices, choices=values,
+                                type=type(values[0]), help="Restrict values of {}.".format(var))
+
+        parser.add_argument('variables', nargs='+', action=ValidateListChoices, choices=oppsql.get_vectors(engine),
+                            help="""The variables to be plotted. If multiple variables are to be plotted, one of the plot's
+                                    dimensions (row, col, hue, x) need to be 'variables'.""")
+
+        dynamic_args = parser.parse_args()
+
+        if (len(dynamic_args.variables) > 1 and
+                'variables' not in (dynamic_args.row, dynamic_args.row, dynamic_args.row, dynamic_args.row)):
+            logging.warn("'variables' not passed for one of the plot's dimensions but plotting multiple variables.")
+
+        # Check for duplicate uses of the same attribute
+        dimension_attributes = {dimension: getattr(dynamic_args, dimension)
+                                for dimension in dimensions if getattr(dynamic_args, dimension)}
+        shared_dimensions = [dimension for dimension, attribute in dimension_attributes.items()
+                             if list(dimension_attributes.values()).count(attribute) != 1]
+        if shared_dimensions:
+            parser.error("Can't reuse the same value for multiple plot dimensions ({})"
+                         .format(', '.join(shared_dimensions)))
+
+        if dynamic_args.output:
+            if osp.isfile(dynamic_args.output):
+                if not dynamic_args.filetype:
+                    dynamic_args.filetype = osp.splitext(dynamic_args.output)[1][1:] or 'pdf'
+
+                dynamic_args.output = dynamic_args.output
+            elif osp.isdir(dynamic_args.output):
+                if not dynamic_args.filetype:
+                    dynamic_args.filetype = 'pdf'
+
+                filename = '_'.join(['-'.join(dynamic_args.variables),
+                                     *('{}={}'.format(dimension, '-'.join(values))
+                                       for dimension, values in selected_data_dimensions)])
+                dynamic_args.output = osp.join(dynamic_args.output, '{}.{}'.format(filename, dynamic_args.filetype))
+                if osp.isdir(dynamic_args.output):
+                    parser.error("Output file exists as directory.")
+
+            if osp.isfile(dynamic_args.output) and not dynamic_args.force:
+                parser.error("Output file exists, use --force to overwrite.")
+
+            return engine, data_dimensions, dynamic_args
+
+    engine, data_dimensions, args = parse_args()
+
+    plot_dimensions = [dim for dim in (args.row, args.col, args.hue, args.x)
+                       if dim is not None]
+
+    selected_data_dimensions = {dimension: (getattr(args, dimension) if getattr(args, dimension)
+                                            else data_dimensions[dimension])
+                                for dimension in data_dimensions}
+    for dimension in data_dimensions:  # print messages for unexpected potentially errornous arguments
+        if (dimension not in plot_dimensions and len(selected_data_dimensions[dimension]) > 1 and not args.quiet):
+            logging.warn("Selected multiple (or all) values for {} without plotting it.".format(dimension))
+        elif (dimension in plot_dimensions and len(selected_data_dimensions[dimension]) == 1 and not args.quiet):
+            logging.info("Plotting {} as separate dimension, but restricting it to only one value.".format(dimension))
+
+    df = oppsql.get_vector(engine, selected_data_dimensions, args.variables)
+
+    if args.output and args.filetype == 'csv':
+        df.to_csv(args.output)
+    else:
+        sns.set()
+        sns.set_context(args.context)
+        fig = None  # TODO plot call
+        if args.show:
+            fig.show()
+        else:
+            fig.savefig(args.output, format=args.filetype)
 
 
 if __name__ == '__main__':
