@@ -6,7 +6,10 @@ setup(
     description='Tools for interacting with OmNET++ SQLite result files',
     author='Max Schettler',
     author_email='schettle@mail.uni-paderborn.de',
-    scripts=['scripts/mergeDBs'],
+    scripts=[
+        'scripts/mergeDBs',
+        'scripts/opplot'
+    ],
     packages=['oppsql'],
     install_requires=[
         'sqlalchemy',
