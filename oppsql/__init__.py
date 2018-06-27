@@ -293,4 +293,10 @@ def get_vector(engine, by, variable, time=False, run=False, module=False,
     with engine.connect() as conn:
         if time:
             conn.connection.connection.create_function('simtime', 2, simtime)
-        return pd.read_sql(stmt, conn)
+
+        df = pd.read_sql(stmt, conn)
+        for attr, vals in by.items():  # FIXME find out why .assign()-based approach does not work
+            df[attr] = df[attr].astype(pd.api.types.CategoricalDtype(vals, ordered=True)
+                                       if type(vals[0]) == str else type(vals[0]))
+
+        return df
