@@ -80,7 +80,7 @@ def main():
 
     if osp.isdir(args.output):
         output = osp.join(args.output, '{}.db'.format(strip_special_suffix(longest_common_prefix(os.listdir(args.result_dir))) or 'out'))
-    elif osp.isfile(args.output) or (not osp.exists(args.output) and osp.isdir(osp.dirname(args.output))):
+    elif osp.isfile(args.output) or (not osp.exists(args.output) and osp.isdir(osp.dirname(args.output) or '.')):
         output = args.output
     else:
         assert(False)
